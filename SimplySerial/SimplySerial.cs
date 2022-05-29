@@ -14,7 +14,7 @@ namespace SimplySerial
 {
     class SimplySerial
     {
-        const string version = "0.8.0-alpha.1";
+        const string version = "0.8.0-alpha.2";
 
         private const int STD_OUTPUT_HANDLE = -11;
         private const uint ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004;
@@ -31,7 +31,7 @@ namespace SimplySerial
         [DllImport("kernel32.dll")]
         public static extern uint GetLastError();
 
-        static string appFolder = AppDomain.CurrentDomain.BaseDirectory;
+        static readonly string appFolder = AppDomain.CurrentDomain.BaseDirectory;
         static BoardData boardData;
 
         static List<ComPort> availablePorts = new List<ComPort>();
@@ -45,6 +45,7 @@ namespace SimplySerial
         static Parity parity = Parity.None;
         static int dataBits = 8;
         static StopBits stopBits = StopBits.One;
+        const Handshake handshake = Handshake.None; // we don't support any handshaking
         static bool logging = false;
         static FileMode logMode = FileMode.Create;
         static string logFile = string.Empty;
@@ -114,6 +115,21 @@ namespace SimplySerial
             // this is where data read from the serial port will be temporarily stored
             string received = string.Empty;
 
+            // Initialization complete, display greeting
+            Console.Clear();
+            string cmdline_args = string.Join(" ", args);
+            Output(string.Format("<<< SimplySerial v{0} started with{1} parameters{2} >>>",
+                version,
+                (string.IsNullOrWhiteSpace(cmdline_args)) ? "out" : "",
+                (string.IsNullOrWhiteSpace(cmdline_args)) ? "" : " [ " + cmdline_args + " ]"
+                ), flush: true);
+
+            // create a list of available ports
+            availablePorts = (SimplySerial.GetSerialPorts()).OrderBy(p => p.num).ToList();
+            ListAvailablePorts();
+            //Output($"<<< Available Comm Ports: {string.Join(",", availablePorts.Select(o=>o.name))} >>>");
+
+
             //main loop - keep this up until user presses CTRL-X or an exception takes us down
             do
             {
@@ -128,16 +144,15 @@ namespace SimplySerial
                     }
                 }
 
-                // get a list of available ports
-                availablePorts = (SimplySerial.GetSerialPorts()).OrderBy(p => p.num).ToList();
-
                 // if no port was specified/selected, pick one automatically
-                if (port.name == String.Empty)
+                if (string.IsNullOrEmpty(port.name))
                 {
                     // if there are com ports available, pick one
                     if (availablePorts.Count() >= 1)
                     {
-                        // first, try to default to something that we assume is running CircuitPython
+
+                        
+                        // try the first available port that we assume is running CircuitPython
                         SimplySerial.port = availablePorts.Find(p => p.isCircuitPython == true);
 
                         // if that doesn't work out, just default to the first available COM port
@@ -149,9 +164,15 @@ namespace SimplySerial
                     else
                     {
                         if (autoConnect == AutoConnect.NONE)
+                        {
                             ExitProgram("No COM ports detected.", exitCode: -1);
+                        }
                         else
+                        {
+                            Output("<<< No COM ports not detected, Retrying.  Use CTRL-X to cancel. >>>");
+                            Thread.Sleep(2000);
                             continue;
+                        }
                     }
                 }
 
@@ -174,16 +195,23 @@ namespace SimplySerial
                     if (!portMatched)
                     {
                         if (autoConnect == AutoConnect.NONE)
+                        {
                             ExitProgram(("Invalid port specified <" + port.name + ">"), exitCode: -1);
+                        }
                         else
+                        {
+                            Output("<<< Invalid port specified <" + port.name + ">, Retrying.  Use CTRL-X to cancel. >>>");
+                            Thread.Sleep(2000);
                             continue;
+                        }
                     }
                 }
 
                 // if we get this far, it should be safe to set up the specified/selected serial port
+                Output("<<< Trying to connect on " + port.name + ",  Use CTRL-X to cancel. >>>");
+                
                 serialPort = new SerialPort(port.name)
                 {
-                    Handshake = Handshake.None, // we don't need to support any handshaking at this point 
                     ReadTimeout = 1, // minimal timeout - we don't want to wait forever for data that may not be coming!
                     WriteTimeout = 250, // small delay - if we go too small on this it causes System.IO semaphore timeout exceptions
                     DtrEnable = true, // without this we don't ever receive any data
@@ -209,6 +237,7 @@ namespace SimplySerial
                 }
 
                 // set other port parameters (which have already been validated)
+                serialPort.Handshake = handshake;
                 serialPort.Parity = parity;
                 serialPort.DataBits = dataBits;
                 serialPort.StopBits = stopBits;
@@ -231,22 +260,22 @@ namespace SimplySerial
 
                     // if auto-connect is enabled, prepare to try again
                     serialPort.Dispose();
-                    Thread.Sleep(1000); // putting a delay here to avoid gobbling tons of resources thruogh constant high-speed re-connect attempts
+                    Thread.Sleep(1000); // putting a delay here to avoid gobbling tons of resources through constant high-speed re-connect attempts
                     continue;
                 }
 
                 // if we get this far, clear the screen and send the connection message if not in 'quiet' mode
-                Console.Clear();
-                Output(String.Format("<<< SimplySerial v{0} connected via {1} >>>\n" +
-                    "Settings  : {2} baud, {3} parity, {4} data bits, {5} stop bit{6}, auto-connect {7}.\n" +
+                // Console.Clear();
+                Output(String.Format("--- {0} Connected ---\n" +
+                    "Settings  : {1} baud, {2} parity, {3} data bits, {4} stop bit{5}, {6} flow-control, auto-connect {7}.\n" +
                     "Device    : {8} {9}{10}\n{11}" +
-                    "---\n\nUse CTRL-X to exit.\n",
-                    version,
+                    "---\n\n<<< Use CTRL-X to exit. >>>\n",
                     port.name,
                     baud,
                     (parity == Parity.None) ? "no" : (parity.ToString()).ToLower(),
                     dataBits,
                     (stopBits == StopBits.None) ? "0" : (stopBits == StopBits.One) ? "1" : (stopBits == StopBits.OnePointFive) ? "1.5" : "2", (stopBits == StopBits.One) ? "" : "s",
+                    (handshake == Handshake.None) ? "no" : (handshake == Handshake.XOnXOff) ? "software" : (handshake == Handshake.RequestToSend) ? "hardware" : (handshake == Handshake.RequestToSendXOnXOff) ? "HW & SW" : "",
                     (autoConnect == AutoConnect.ONE) ? "on" : (autoConnect == AutoConnect.ANY) ? "any" : "off",
                     port.board.make,
                     port.board.model,
@@ -333,15 +362,22 @@ namespace SimplySerial
                         {
                             //nothing to do here, other than prevent execution from stopping if dispose() throws an exception
                         }
-                        Thread.Sleep(2000); // sort-of arbitrary delay - should be long enough to read the "interrupted" message
+#if DEBUG
+                        Thread.Sleep(250); // short wait for "interrupted" message in debug
+#else
+                        Thread.Sleep(1000); // sort-of arbitrary delay - should be long enough to read the "interrupted" message
+#endif
                         if (autoConnect == AutoConnect.ANY)
                         {
+                            // refresh list of available ports
+                            availablePorts = (SimplySerial.GetSerialPorts()).OrderBy(p => p.num).ToList();
+
+                            // TODO: increment port to next available (instead of selecting first available)
                             port.name = String.Empty;
-                            Output("<<< Attemping to connect to any available COM port.  Use CTRL-X to cancel >>>");
                         }
                         else if (autoConnect == AutoConnect.ONE)
                         {
-                            Output("<<< Attempting to re-connect to " + port.name + ". Use CTRL-X to cancel >>>");
+                            // Reconnect on the same port
                         }
                         break;
                     }
@@ -394,26 +430,7 @@ namespace SimplySerial
                     // get a list of all available ports
                     availablePorts = (SimplySerial.GetSerialPorts()).OrderBy(p => p.num).ToList();
 
-                    if (availablePorts.Count >= 1)
-                    {
-                        Console.WriteLine("\nPORT\tVID\tPID\tDESCRIPTION");
-                        Console.WriteLine("----------------------------------------------------------------------");
-                        foreach (ComPort p in availablePorts)
-                        {
-                            Console.WriteLine("{0}\t{1}\t{2}\t{3} {4}",
-                                p.name,
-                                p.vid,
-                                p.pid,
-                                (p.isCircuitPython) ? (p.board.make + " " + p.board.model) : p.description,
-                                ((p.busDescription.Length > 0) && !p.description.StartsWith(p.busDescription)) ? ("[" + p.busDescription + "]") : ""
-                            );
-                        }
-                        Console.WriteLine("");
-                    }
-                    else
-                    {
-                        Console.WriteLine("\nNo COM ports detected.\n");
-                    }
+                    ListAvailablePorts();
 
                     ExitProgram(silent: true);
                 }
@@ -442,7 +459,8 @@ namespace SimplySerial
                     string newPort = argument[1].ToUpper();
 
                     if (!argument[1].StartsWith("COM"))
-                        newPort = "COM" + argument[1];
+                        if (argument[1].All(char.IsNumber))
+                            newPort = "COM" + argument[1];
                     port.name = newPort;
                     autoConnect = AutoConnect.ONE;
                 }
@@ -540,21 +558,31 @@ namespace SimplySerial
                 }
             }
 
-            Console.Clear();
-            if (autoConnect == AutoConnect.ANY)
-            {
-                Output("<<< Attemping to connect to any available COM port.  Use CTRL-X to cancel >>>");
-            }
-            else if (autoConnect == AutoConnect.ONE)
-            {
-                Console.Clear();
-                if (port.name == String.Empty)
-                    Output("<<< Attempting to connect to first available COM port.  Use CTRL-X to cancel >>>");
-                else
-                    Output("<<< Attempting to connect to " + port.name + ".  Use CTRL-X to cancel >>>");
-            }
-                       
             // if we made it this far, everything has been processed and we're ready to proceed!
+        }
+
+        private static void ListAvailablePorts()
+        {
+            if (availablePorts.Count >= 1)
+            {
+                Console.WriteLine("\nPORT\tVID\tPID\tDESCRIPTION");
+                Console.WriteLine("----------------------------------------------------------------------");
+                foreach (ComPort p in availablePorts)
+                {
+                    Console.WriteLine("{0}\t{1}\t{2}\t{3} {4}",
+                        p.name,
+                        p.vid,
+                        p.pid,
+                        (p.isCircuitPython) ? (p.board.make + " " + p.board.model) : p.description,
+                        ((p.busDescription.Length > 0) && !p.description.StartsWith(p.busDescription)) ? ("[" + p.busDescription + "]") : ""
+                    );
+                }
+                Console.WriteLine("");
+            }
+            else
+            {
+                Console.WriteLine("\nNo COM ports detected.\n");
+            }
         }
 
 
@@ -699,10 +727,12 @@ namespace SimplySerial
             
             foreach (var p in new ManagementObjectSearcher("root\\CIMV2", query).Get().OfType<ManagementObject>())
             {
-                ComPort c = new ComPort();
+                ComPort c = new ComPort
+                {
+                    // extract and clean up port name and number
+                    name = p.GetPropertyValue("Name").ToString()
+                };
 
-                // extract and clean up port name and number
-                c.name = p.GetPropertyValue("Name").ToString();
                 Match mName = Regex.Match(c.name, namePattern);
                 if (mName.Success)
                 {
@@ -798,10 +828,12 @@ namespace SimplySerial
                     boardData = JsonConvert.DeserializeObject<BoardData>(json);
                 }
             }
-            catch (Exception e)
+            catch (Exception)
             {
-                boardData = new BoardData();
-                boardData.version = "(boards.json is missing or invalid)";
+                boardData = new BoardData
+                {
+                    version = "(boards.json is missing or invalid)"
+                };
             }
         }
     }
@@ -847,5 +879,3 @@ namespace SimplySerial
         }
     }
 }
-
-
